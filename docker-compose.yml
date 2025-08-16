@@ -1,0 +1,51 @@
+#version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
+  protector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      REDIS_ADDR: "redis:6379"
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27
+    volumes:
+      - ./configs/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8081:8080"   # host:container (plain HTTP for dev)
+    depends_on:
+      - protector
+
+  prometheus:
+    image: prom/prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - protector
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus

@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "stormgate"
+    static_configs:
+      - targets: ["protector:8080"]

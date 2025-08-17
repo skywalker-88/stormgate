@@ -1,9 +1,9 @@
 # StormGate Development Checklist
 
 ## 1. Routes & Scaffolding
-- [ ] Add `/` (banner JSON), `/read` (cheap), `/search` (expensive).
-- [ ] Wire basic request logging (zerolog).
-- [ ] **Done when**: curl to each route returns 200 with JSON.
+- [x] Add `/` (banner JSON), `/read` (cheap), `/search` (expensive).
+- [x] Wire basic request logging (zerolog).
+- [x] **Done when**: curl to each route returns 200 with JSON.
 
 ## 2. Config & Policies
 - [ ] Create `configs/policies.yaml` with defaults + per-route `{rps, burst, cost}`.
@@ -53,3 +53,8 @@
 - [ ] Update README with usage instructions.
 - [ ] Add `docs/` folder with Grafana screenshots, logs, architecture diagram, policy YAML.
 - [ ] **Done when**: repo is review-ready with evidence.
+
+## Misclenious
+
+- [ ] Graceful shutdown (later): Swap ListenAndServe for a server with Shutdown(ctx) on SIGINT/SIGTERM.
+

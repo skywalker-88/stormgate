@@ -17,9 +17,12 @@ services:
       context: .
       dockerfile: Dockerfile
     environment:
+      STORMGATE_HTTP_ADDR: ":8080"
+      BACKEND_URL: "http://demo-backend:8081"   # will 502 until you plug a backend
       REDIS_ADDR: "redis:6379"
-    ports:
-      - "8080:8080"
+      ACCESS_LOG: "true"        
+      ACCESS_LOG_SAMPLE: "1"    # log all (set 10 to sample 1/10)
+      PROXY_PREFIX: "/api" # prefix for all API requests
     depends_on:
       redis:
         condition: service_healthy

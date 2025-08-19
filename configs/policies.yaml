@@ -1,0 +1,26 @@
+server:
+  addr: ":8080"
+
+redis:
+  addr: "redis:6379"   # use "redis:6379" when running via docker-compose
+  db: 0
+  password: ""
+
+identity:
+  # one of: header:<Header-Name> | ip
+  source: "header:X-API-Key"
+
+limits:
+  default:
+    rps: 20
+    burst: 40
+    cost: 1
+  routes:
+    "/read":
+      rps: 50
+      burst: 100
+      cost: 1
+    "/search":
+      rps: 10
+      burst: 20
+      cost: 5

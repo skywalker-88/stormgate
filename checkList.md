@@ -6,16 +6,16 @@
 - [x] **Done when**: curl to each route returns 200 with JSON.
 
 ## 2. Config & Policies
-- [ ] Create `configs/policies.yaml` with defaults + per-route `{rps, burst, cost}`.
-- [ ] Implement loader with koanf + hot reload.
-- [ ] **Done when**: changing YAML affects limits without rebuild.
+- [x] Create `configs/policies.yaml` with defaults + per-route `{rps, burst, cost}`.
+- [x] Implement loader with koanf + hot reload.
+- [x] **Done when**: changing YAML affects limits without rebuild.
 
 ## 3. Redis Token Bucket Limiter
-- [ ] Implement atomic Lua script for refill + consume.
-- [ ] Create Go wrapper for limiter logic.
-- [ ] Apply "cost" per route.
-- [ ] Return 429 on exceed and export Prometheus counter.
-- [ ] **Done when**: hammering `/search` triggers 429; Prometheus counter rises.
+- [x] Implement atomic Lua script for refill + consume.
+- [x] Create Go wrapper for limiter logic.
+- [x] Apply "cost" per route.
+- [x] Return 429 on exceed and export Prometheus counter.
+- [x] **Done when**: hammering `/search` triggers 429; Prometheus counter rises.
 
 ## 4. Edge Sanity (NGINX)
 - [ ] Test `limit_req` & `limit_conn` at `:8081`.

@@ -14,6 +14,9 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/skywalker-88/stormgate/internal/httpserver"
+	Lm "github.com/skywalker-88/stormgate/internal/middleware"
+	"github.com/skywalker-88/stormgate/internal/rl"
+	"github.com/skywalker-88/stormgate/pkg/config"
 )
 
 // MakeReverseProxy lives in main: build once, inject into the router.
@@ -69,12 +72,25 @@ func main() {
 	// Structured console logs
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 
+	// ---- Load config (with env fallbacks) ----
+	cfgPath := os.Getenv("STORMGATE_CONFIG")
+	if cfgPath == "" {
+		cfgPath = "configs/policies.yaml"
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		log.Fatal().Err(err).Str("config", cfgPath).Msg("load config")
+	}
+
 	// (Optional for now) Redis client — used later for distributed rate limiting
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     getenv("REDIS_ADDR", "redis:6379"),
 		Password: "",
 		DB:       0,
 	})
+
+	limiter := rl.New(rdb)
+	rlmw := Lm.NewRateLimiter(limiter, cfg)
 
 	// Build reverse proxy target (backend may not exist yet — that’s fine; we’ll return 502)
 	backend := getenv("BACKEND_URL", "http://demo-backend:8081")
@@ -84,7 +100,7 @@ func main() {
 	}
 
 	// Build router (handles /health, /metrics, dev /read & /search; mounts proxy under /api/* per router)
-	router := httpserver.NewRouter(proxy)
+	router := httpserver.NewRouter(httpserver.RouterDeps{Cfg: cfg, RL: rlmw}, proxy)
 
 	// Startup logs
 	addr := getenv("STORMGATE_HTTP_ADDR", ":8080")

@@ -23,6 +23,8 @@ services:
       ACCESS_LOG: "true"        
       ACCESS_LOG_SAMPLE: "1"    # log all (set 10 to sample 1/10)
       PROXY_PREFIX: "/api" # prefix for all API requests
+    ports:
+      - "8080:8080"   # host:container (plain HTTP for dev)
     depends_on:
       redis:
         condition: service_healthy

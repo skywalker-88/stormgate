@@ -10,6 +10,15 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /bin/protector ./cmd/prote
 
 # Run stage (distroless for small, secure image)
 FROM gcr.io/distroless/base-debian12
+
+# Create config directory inside the image
+WORKDIR /app
+
+# Copy binary
 COPY --from=build /bin/protector /protector
+
+# Copy configs (YAML, etc.)
+COPY configs ./configs
+
 EXPOSE 8080
 ENTRYPOINT ["/protector"]

@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+.github/
+.gitlab-ci.yml
+
+# Local dev / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Binaries & build artifacts
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Dependencies cache
+vendor/
+
+# Configs (keep configs/, drop local overrides)
+*.local.yaml
+*.env
+.env.*
+
+# Logs & dumps
+*.log
+*.pid
+*.prof
+
+# Tests & scripts (don’t ship to container)
+*_test.go
+coverage.*
+demo-scripts/

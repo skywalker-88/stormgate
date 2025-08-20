@@ -11,7 +11,8 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/skywalker-88/stormgate/internal/middleware"
+	Lm "github.com/skywalker-88/stormgate/internal/middleware"
+	"github.com/skywalker-88/stormgate/pkg/config"
 )
 
 // Metrics (single registration for app + tests)
@@ -35,15 +36,20 @@ func (sr *statusRecorder) WriteHeader(code int) {
 	sr.ResponseWriter.WriteHeader(code)
 }
 
+type RouterDeps struct {
+	Cfg *config.Config
+	RL  *Lm.RateLimiter
+}
+
 // NewRouter builds the Chi router. If proxy is nil, only local routes are served.
-func NewRouter(proxy *httputil.ReverseProxy) http.Handler {
+func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) http.Handler {
 	r := chi.NewRouter()
 
 	// Built-in safety middlewares
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Recoverer)
 
 	// NEW: zerolog access logging (reads ACCESS_LOG / ACCESS_LOG_SAMPLE)
-	r.Use(middleware.AccessLoggerFromEnv())
+	r.Use(Lm.AccessLoggerFromEnv())
 
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -62,18 +68,26 @@ func NewRouter(proxy *httputil.ReverseProxy) http.Handler {
 
 	r.Handle("/metrics", promhttp.Handler())
 
+	limRead := d.Cfg.Limits.Routes["/read"]
+	limSearch := d.Cfg.Limits.Routes["/search"]
+	if limRead.RPS == 0 {
+		limRead = d.Cfg.Limits.Default
+	}
+	if limSearch.RPS == 0 {
+		limSearch = d.Cfg.Limits.Default
+	}
+
 	// TODO(stormgate): remove local /read and /search once a proper backend is wired,
 	// and apply rate limiting before proxy for those backend routes.
-	r.Get("/read", func(w http.ResponseWriter, _ *http.Request) {
+	// Local demo endpoints (rate-limited)
+	r.With(func(next http.Handler) http.Handler { return d.RL.Limit("/read", limRead, next) }).Get("/read", func(w http.ResponseWriter, _ *http.Request) {
 		Requests.WithLabelValues("200", "/read").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"msg":"read ok"}`))
 	})
 
-	r.Get("/search", func(w http.ResponseWriter, _ *http.Request) {
-		// simulate a slightly heavier call (optional)
-		// time.Sleep(40 * time.Millisecond)
+	r.With(func(next http.Handler) http.Handler { return d.RL.Limit("/search", limSearch, next) }).Get("/search", func(w http.ResponseWriter, _ *http.Request) {
 		Requests.WithLabelValues("200", "/search").Inc()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

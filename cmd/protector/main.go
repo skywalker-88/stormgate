@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -62,7 +65,7 @@ func MakeReverseProxy(target string) (*httputil.ReverseProxy, error) {
 	rp.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		_, _ = w.Write([]byte(`{"error":"bad_gateway"}`))
+		_, _ = w.Write([]byte(`{"error":"bad_gateway"}` + "\n"))
 	}
 
 	return rp, nil
@@ -82,7 +85,7 @@ func main() {
 		log.Fatal().Err(err).Str("config", cfgPath).Msg("load config")
 	}
 
-	// (Optional for now) Redis client — used later for distributed rate limiting
+	// Redis client
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     getenv("REDIS_ADDR", "redis:6379"),
 		Password: "",
@@ -115,10 +118,48 @@ func main() {
 		log.Info().Msg("redis reachable")
 	}
 
-	// TODO(stormgate): swap to http.Server + graceful Shutdown(ctx) on SIGINT/SIGTERM
-	if err := http.ListenAndServe(addr, router); err != nil {
-		log.Fatal().Err(err).Msg("server stopped")
+	// http.Server with sane timeouts
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,  // slowloris protection
+		WriteTimeout:      15 * time.Second, // bound handler writes
+		IdleTimeout:       60 * time.Second, // keep-alive lifetime
 	}
+
+	// Serve in background
+	go func() {
+		log.Info().Str("addr", srv.Addr).Msg("http server listening")
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal().Err(err).Msg("server stopped unexpectedly")
+		}
+	}()
+
+	// Graceful shutdown on SIGINT/SIGTERM
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	sig := <-quit
+	log.Info().Str("signal", sig.String()).Msg("shutdown requested; draining")
+
+	httpserver.SetDraining(true)
+
+	shCtx, shCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shCancel()
+	if err := srv.Shutdown(shCtx); err != nil {
+		log.Error().Err(err).Msg("server shutdown did not complete in time; forcing close")
+		_ = srv.Close()
+	} else {
+		log.Info().Msg("http server shut down cleanly")
+	}
+
+	// Close external resources
+	if err := rdb.Close(); err != nil {
+		log.Warn().Err(err).Msg("redis close")
+	} else {
+		log.Info().Msg("redis closed")
+	}
+
+	log.Info().Msg("stormgate exited")
 }
 
 func getenv(k, def string) string {

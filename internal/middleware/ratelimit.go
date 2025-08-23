@@ -11,6 +11,7 @@ import (
 
 	"github.com/skywalker-88/stormgate/internal/rl"
 	"github.com/skywalker-88/stormgate/pkg/config"
+	"github.com/skywalker-88/stormgate/pkg/metrics"
 )
 
 type RateLimiter struct {
@@ -67,10 +68,14 @@ func (r *RateLimiter) Limit(route string, lim config.Limit, next http.Handler) h
 		w.Header().Set("X-RateLimit-Remaining", formatFloat(remaining))
 		w.Header().Set("X-RateLimit-Reset", formatDuration(resetAfter))
 		if !allowed {
+			metrics.Limited.WithLabelValues(route).Inc()
 			log.Info().
 				Str("route", route).
 				Str("key", key).
 				Float64("remaining", remaining).
+				Int64("burst", lim.Burst).
+				Float64("rps", lim.RPS).
+				Dur("retry_after", retryAfter).
 				Msg("rate_limited")
 			if retryAfter > 0 {
 				w.Header().Set("Retry-After", formatSeconds(retryAfter))

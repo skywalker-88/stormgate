@@ -60,10 +60,14 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) http.Handler {
 	})
 
 	// Local endpoints
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
+	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		if IsDraining() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"draining"}` + "\n"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
 	})
 
 	r.Handle("/metrics", promhttp.Handler())

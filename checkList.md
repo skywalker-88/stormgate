@@ -56,5 +56,5 @@
 
 ## Misclenious
 
-- [ ] Graceful shutdown (later): Swap ListenAndServe for a server with Shutdown(ctx) on SIGINT/SIGTERM.
+- [x] Graceful shutdown (later): Swap ListenAndServe for a server with Shutdown(ctx) on SIGINT/SIGTERM.
 

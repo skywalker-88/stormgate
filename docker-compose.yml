@@ -25,6 +25,7 @@ services:
       PROXY_PREFIX: "/api" # prefix for all API requests
     ports:
       - "8080:8080"   # host:container (plain HTTP for dev)
+    stop_grace_period: 20s
     depends_on:
       redis:
         condition: service_healthy

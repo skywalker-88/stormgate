@@ -18,14 +18,14 @@
 - [x] **Done when**: hammering `/search` triggers 429; Prometheus counter rises.
 
 ## 4. Edge Sanity (NGINX)
-- [ ] Test `limit_req` & `limit_conn` at `:8081`.
-- [ ] Enable and check access logs.
-- [ ] **Done when**: bursts to `:8081` show 503 from NGINX while `:8080` uses Go limiter.
+- [x] Test `limit_req` & `limit_conn` at `:8081`.
+- [x] Enable and check access logs.
+- [x] **Done when**: bursts to `:8081` show 503 from NGINX while `:8080` uses Go limiter.
 
 ## 5. Anomaly Detection v1
-- [ ] Implement EWMA + p95 calculations per route.
-- [ ] Add Prometheus gauge for anomalies.
-- [ ] **Done when**: synthetic spike flips gauge and reverts after cooldown.
+- [x] Implement EWMA calculations per route + client.
+- [x] Add Prometheus gauge for anomalies.
+- [x] **Done when**: bursts t0 `:8080` and anomalies counters and gauges are updated properly.
 
 ## 6. Mitigation Ladder
 - [ ] Tighten `{rps, burst}` on anomaly detection.

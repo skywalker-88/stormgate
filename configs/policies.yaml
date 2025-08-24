@@ -24,3 +24,14 @@ limits:
       rps: 10
       burst: 20
       cost: 5
+
+anomaly:
+  enabled: true
+  window_seconds: 10
+  buckets: 10
+  threshold_multiplier: 2.0
+  ewma_alpha: 0.2
+  ttl_seconds: 300 # evict keys idle > 5m
+  evict_every_seconds: 30 # run janitor every 30s
+  keep_suspicious_seconds: 600 # keep suspicious keys for 10m
+

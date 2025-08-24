@@ -23,6 +23,7 @@ services:
       ACCESS_LOG: "true"        
       ACCESS_LOG_SAMPLE: "1"    # log all (set 10 to sample 1/10)
       PROXY_PREFIX: "/api" # prefix for all API requests
+      LOG_LEVEL: "debug"
     ports:
       - "8080:8080"   # host:container (plain HTTP for dev)
     stop_grace_period: 20s

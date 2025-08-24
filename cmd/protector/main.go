@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -72,8 +73,19 @@ func MakeReverseProxy(target string) (*httputil.ReverseProxy, error) {
 }
 
 func main() {
-	// Structured console logs
+	// ------- Logging setup -------
+	// Console pretty logs; change LOG_LEVEL to "debug" to see detector debug lines.
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
+	switch strings.ToLower(getenv("LOG_LEVEL", "info")) {
+	case "debug":
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	case "warn":
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	case "error":
+		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	default:
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
 
 	// ---- Load config (with env fallbacks) ----
 	cfgPath := os.Getenv("STORMGATE_CONFIG")
@@ -103,11 +115,16 @@ func main() {
 	}
 
 	// Build router (handles /health, /metrics, dev /read & /search; mounts proxy under /api/* per router)
-	router := httpserver.NewRouter(httpserver.RouterDeps{Cfg: cfg, RL: rlmw}, proxy)
+	router, cleanup := httpserver.NewRouter(httpserver.RouterDeps{Cfg: cfg, RL: rlmw}, proxy)
 
 	// Startup logs
 	addr := getenv("STORMGATE_HTTP_ADDR", ":8080")
-	log.Info().Str("addr", addr).Str("backend", backend).Msg("StormGate starting")
+	log.Info().
+		Str("addr", addr).
+		Str("backend", backend).
+		Str("config", cfgPath).
+		Str("log_level", zerolog.GlobalLevel().String()).
+		Msg("StormGate starting")
 
 	// Non-fatal Redis ping
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -150,6 +167,11 @@ func main() {
 		_ = srv.Close()
 	} else {
 		log.Info().Msg("http server shut down cleanly")
+	}
+
+	// Cleanup any resources (e.g., stop anomaly janitor)
+	if cleanup != nil {
+		cleanup()
 	}
 
 	// Close external resources

@@ -11,8 +11,11 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog/log"
+	"github.com/skywalker-88/stormgate/internal/anom"
 	Lm "github.com/skywalker-88/stormgate/internal/middleware"
 	"github.com/skywalker-88/stormgate/pkg/config"
+	"github.com/skywalker-88/stormgate/pkg/metrics"
 )
 
 // Metrics (single registration for app + tests)
@@ -42,7 +45,7 @@ type RouterDeps struct {
 }
 
 // NewRouter builds the Chi router. If proxy is nil, only local routes are served.
-func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) http.Handler {
+func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) (http.Handler, func()) {
 	r := chi.NewRouter()
 
 	// Built-in safety middlewares
@@ -50,6 +53,34 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) http.Handler {
 
 	// NEW: zerolog access logging (reads ACCESS_LOG / ACCESS_LOG_SAMPLE)
 	r.Use(Lm.AccessLoggerFromEnv())
+
+	// Anomaly detection middleware
+	metrics.RegisterAnomalyMetrics(prometheus.DefaultRegisterer)
+	ad := anom.NewDetector(anom.Config{
+		Enabled:               d.Cfg.Anomaly.Enabled,
+		WindowSeconds:         d.Cfg.Anomaly.WindowSeconds,
+		Buckets:               d.Cfg.Anomaly.Buckets,
+		ThresholdMultiplier:   d.Cfg.Anomaly.ThresholdMultiplier,
+		EWMAAlpha:             d.Cfg.Anomaly.EWMAAlpha,
+		TTLSeconds:            d.Cfg.Anomaly.TTLSeconds,
+		EvictEverySeconds:     d.Cfg.Anomaly.EvictEverySeconds,
+		KeepSuspiciousSeconds: d.Cfg.Anomaly.KeepSuspiciousSeconds,
+	})
+	log.Info().
+		Bool("enabled", d.Cfg.Anomaly.Enabled).
+		Int("window_seconds", d.Cfg.Anomaly.WindowSeconds).
+		Int("buckets", d.Cfg.Anomaly.Buckets).
+		Float64("threshold_multiplier", d.Cfg.Anomaly.ThresholdMultiplier).
+		Float64("ewma_alpha", d.Cfg.Anomaly.EWMAAlpha).
+		Int("ttl_seconds", d.Cfg.Anomaly.TTLSeconds).
+		Int("evict_every_seconds", d.Cfg.Anomaly.EvictEverySeconds).
+		Int("keep_suspicious_seconds", d.Cfg.Anomaly.KeepSuspiciousSeconds).
+		Msg("anomaly_config")
+	r.Use(ad.Middleware)
+
+	cleanup := func() {
+		ad.Close() // stop janitor goroutine
+	}
 
 	r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -101,12 +132,11 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) http.Handler {
 	// -------- Proxy prefix from env --------
 	prefix := strings.TrimSpace(os.Getenv("PROXY_PREFIX")) // e.g., "/api"
 	if prefix == "" {
-		// No prefix configured: do NOT proxy anything. Unknown paths → 404.
 		r.NotFound(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"not_found"}`))
 		}))
-		return r
+		return r, cleanup
 	}
 	if !strings.HasPrefix(prefix, "/") {
 		prefix = "/" + prefix
@@ -137,5 +167,5 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) http.Handler {
 		_, _ = w.Write([]byte(`{"error":"not_found"}`))
 	}))
 
-	return r
+	return r, cleanup
 }

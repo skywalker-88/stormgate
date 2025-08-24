@@ -33,11 +33,23 @@ type Limits struct {
 	Routes  map[string]Limit `yaml:"routes"`
 }
 
+type Anomaly struct {
+	Enabled               bool    `yaml:"enabled"`
+	WindowSeconds         int     `yaml:"window_seconds"`
+	Buckets               int     `yaml:"buckets"`
+	ThresholdMultiplier   float64 `yaml:"threshold_multiplier"`
+	EWMAAlpha             float64 `yaml:"ewma_alpha"`
+	TTLSeconds            int     `yaml:"ttl_seconds"`
+	EvictEverySeconds     int     `yaml:"evict_every_seconds"`
+	KeepSuspiciousSeconds int     `yaml:"keep_suspicious_seconds"`
+}
+
 type Config struct {
 	Server   Server   `yaml:"server"`
 	Redis    Redis    `yaml:"redis"`
 	Identity Identity `yaml:"identity"`
 	Limits   Limits   `yaml:"limits"`
+	Anomaly  Anomaly  `yaml:"anomaly"`
 }
 
 func Load(path string) (*Config, error) {
@@ -46,7 +58,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	var cfg Config
-	if err := k.Unmarshal("", &cfg); err != nil {
+	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
+		Tag: "yaml", // ← use yaml tags instead of the default "koanf"
+	}); err != nil {
 		return nil, err
 	}
 	return &cfg, nil

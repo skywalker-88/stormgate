@@ -17,13 +17,21 @@ limits:
     cost: 1
   routes:
     "/read":
-      rps: 50
-      burst: 100
+      rps: 2
+      burst: 2
       cost: 1
     "/search":
-      rps: 10
-      burst: 20
-      cost: 5
+      rps: 2
+      burst: 2
+      cost: 2
+    "/api":
+      rps: 2
+      burst: 2
+      cost: 1
+  global_client:
+    rps: 4
+    burst: 4
+    cost: 1
 
 anomaly:
   enabled: true
@@ -34,4 +42,25 @@ anomaly:
   ttl_seconds: 300 # evict keys idle > 5m
   evict_every_seconds: 30 # run janitor every 30s
   keep_suspicious_seconds: 600 # keep suspicious keys for 10m
+
+mitigation:
+  # global safety rails
+  min_rps: 1            # never clamp below this
+  min_burst: 5
+  override_ttl_seconds: 180
+  block_ttl_seconds: 120
+  step_ramp:            # 50% -> 75% -> 100% style ramp
+    enabled: true
+    steps: [0.5, 0.75, 1.0]
+    step_seconds: 45
+
+  # escalation
+  repeat_offender:
+    window_seconds: 600   # M minutes
+    threshold: 3          # N anomalies in window -> block
+
+  # allowlist (no mitigation)
+  allowlist:
+    clients: ["1.2.3.4", "partner-key-abc"]
+
 

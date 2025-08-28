@@ -24,7 +24,6 @@ import (
 )
 
 // MakeReverseProxy lives in main: build once, inject into the router.
-// Director sets standard X-Forwarded-* headers; ErrorHandler returns JSON 502.
 func MakeReverseProxy(target string) (*httputil.ReverseProxy, error) {
 	u, err := url.Parse(target)
 	if err != nil {
@@ -34,7 +33,6 @@ func MakeReverseProxy(target string) (*httputil.ReverseProxy, error) {
 
 	orig := rp.Director
 	rp.Director = func(req *http.Request) {
-		// capture client/host/proto BEFORE director mutates the request
 		origHost := req.Host
 		origProto := "http"
 		if req.TLS != nil {
@@ -50,10 +48,8 @@ func MakeReverseProxy(target string) (*httputil.ReverseProxy, error) {
 		}
 		xff := req.Header.Get("X-Forwarded-For")
 
-		// apply default director changes (scheme/host/path rewrite)
 		orig(req)
 
-		// set forwarded headers
 		if xff == "" {
 			req.Header.Set("X-Forwarded-For", client)
 		} else {
@@ -74,9 +70,8 @@ func MakeReverseProxy(target string) (*httputil.ReverseProxy, error) {
 
 func main() {
 	// ------- Logging setup -------
-	// Console pretty logs; change LOG_LEVEL to "debug" to see detector debug lines.
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
-	switch strings.ToLower(getenv("LOG_LEVEL", "info")) {
+	switch strings.ToLower(config.MustEnv("LOG_LEVEL", "info")) {
 	case "debug":
 		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	case "warn":
@@ -92,33 +87,53 @@ func main() {
 	if cfgPath == "" {
 		cfgPath = "configs/policies.yaml"
 	}
-	cfg, err := config.Load(cfgPath)
+	// NOTE: using Load() with internal fallback, as in your current repo
+	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal().Err(err).Str("config", cfgPath).Msg("load config")
 	}
 
 	// Redis client
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     getenv("REDIS_ADDR", "redis:6379"),
+		Addr:     config.MustEnv("REDIS_ADDR", "redis:6379"),
 		Password: "",
 		DB:       0,
 	})
 
+	// limiter + mitigator
 	limiter := rl.New(rdb)
-	rlmw := Lm.NewRateLimiter(limiter, cfg)
+	mit := rl.NewRedisMitigator(rdb) // NEW
 
-	// Build reverse proxy target (backend may not exist yet — that’s fine; we’ll return 502)
-	backend := getenv("BACKEND_URL", "http://demo-backend:8081")
+	// start a small background job to keep gauges current  // NEW
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			if err := mit.RefreshActiveGauges(context.Background()); err != nil {
+				// keep this at debug to avoid noise
+				log.Debug().Err(err).Msg("mitigation gauge refresh")
+			}
+		}
+	}()
+
+	// middleware rate limiter (now takes mitigator)        // CHANGED
+	rlmw := Lm.NewRateLimiter(limiter, cfg, mit)
+
+	// Build reverse proxy target (backend may not exist yet — we’ll return 502)
+	backend := config.MustEnv("BACKEND_URL", "http://demo-backend:8081")
 	proxy, err := MakeReverseProxy(backend)
 	if err != nil {
 		log.Fatal().Err(err).Str("backend", backend).Msg("invalid BACKEND_URL")
 	}
 
-	// Build router (handles /health, /metrics, dev /read & /search; mounts proxy under /api/* per router)
-	router, cleanup := httpserver.NewRouter(httpserver.RouterDeps{Cfg: cfg, RL: rlmw}, proxy)
+	// Build router
+	router, cleanup := httpserver.NewRouter(
+		httpserver.RouterDeps{Cfg: cfg, RL: rlmw, Mitigator: mit}, // pass Mitigator (optional)
+		proxy,
+	)
 
 	// Startup logs
-	addr := getenv("STORMGATE_HTTP_ADDR", ":8080")
+	addr := config.MustEnv("STORMGATE_HTTP_ADDR", ":8080")
 	log.Info().
 		Str("addr", addr).
 		Str("backend", backend).
@@ -139,12 +154,11 @@ func main() {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           router,
-		ReadHeaderTimeout: 5 * time.Second,  // slowloris protection
-		WriteTimeout:      15 * time.Second, // bound handler writes
-		IdleTimeout:       60 * time.Second, // keep-alive lifetime
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	// Serve in background
 	go func() {
 		log.Info().Str("addr", srv.Addr).Msg("http server listening")
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -152,7 +166,7 @@ func main() {
 		}
 	}()
 
-	// Graceful shutdown on SIGINT/SIGTERM
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	sig := <-quit
@@ -169,12 +183,9 @@ func main() {
 		log.Info().Msg("http server shut down cleanly")
 	}
 
-	// Cleanup any resources (e.g., stop anomaly janitor)
 	if cleanup != nil {
 		cleanup()
 	}
-
-	// Close external resources
 	if err := rdb.Close(); err != nil {
 		log.Warn().Err(err).Msg("redis close")
 	} else {
@@ -182,11 +193,4 @@ func main() {
 	}
 
 	log.Info().Msg("stormgate exited")
-}
-
-func getenv(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }

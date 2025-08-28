@@ -43,7 +43,7 @@ else
 end
 
 -- Persist state and set a TTL ~ 2x full-refill time (never 0)
-redis.call('HMSET', key, 'tokens', tokens, 'ts', ts)
+redis.call('HSET', key, 'tokens', tokens, 'ts', ts)
 local ttl = math.floor((burst / math.max(rate, 0.0001)) * 2 + 0.5)
 if ttl < 1 then ttl = 1 end
 redis.call('EXPIRE', key, ttl)

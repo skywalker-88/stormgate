@@ -4,16 +4,20 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
+
 	"github.com/skywalker-88/stormgate/internal/anom"
 	Lm "github.com/skywalker-88/stormgate/internal/middleware"
+	"github.com/skywalker-88/stormgate/internal/rl"
 	"github.com/skywalker-88/stormgate/pkg/config"
 	"github.com/skywalker-88/stormgate/pkg/metrics"
 )
@@ -40,8 +44,9 @@ func (sr *statusRecorder) WriteHeader(code int) {
 }
 
 type RouterDeps struct {
-	Cfg *config.Config
-	RL  *Lm.RateLimiter
+	Cfg       *config.Config
+	RL        *Lm.RateLimiter
+	Mitigator rl.Mitigator // optional: future admin endpoints may use this
 }
 
 // NewRouter builds the Chi router. If proxy is nil, only local routes are served.
@@ -51,10 +56,10 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) (http.Handler, func()
 	// Built-in safety middlewares
 	r.Use(chimw.RequestID, chimw.RealIP, chimw.Recoverer)
 
-	// NEW: zerolog access logging (reads ACCESS_LOG / ACCESS_LOG_SAMPLE)
+	// zerolog access logging (reads ACCESS_LOG / ACCESS_LOG_SAMPLE)
 	r.Use(Lm.AccessLoggerFromEnv())
 
-	// Anomaly detection middleware
+	// Anomaly detection middleware (keeps /metrics and /health excluded inside the detector)
 	metrics.RegisterAnomalyMetrics(prometheus.DefaultRegisterer)
 	ad := anom.NewDetector(anom.Config{
 		Enabled:               d.Cfg.Anomaly.Enabled,
@@ -65,6 +70,9 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) (http.Handler, func()
 		TTLSeconds:            d.Cfg.Anomaly.TTLSeconds,
 		EvictEverySeconds:     d.Cfg.Anomaly.EvictEverySeconds,
 		KeepSuspiciousSeconds: d.Cfg.Anomaly.KeepSuspiciousSeconds,
+	}, anom.Deps{
+		Mit: d.RL.Mit,
+		Cfg: d.Cfg,
 	})
 	log.Info().
 		Bool("enabled", d.Cfg.Anomaly.Enabled).
@@ -91,7 +99,7 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) (http.Handler, func()
 	})
 
 	// Local endpoints
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		if IsDraining() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"status":"draining"}` + "\n"))
@@ -103,31 +111,29 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) (http.Handler, func()
 
 	r.Handle("/metrics", promhttp.Handler())
 
-	limRead := d.Cfg.Limits.Routes["/read"]
-	limSearch := d.Cfg.Limits.Routes["/search"]
-	if limRead.RPS == 0 {
-		limRead = d.Cfg.Limits.Default
-	}
-	if limSearch.RPS == 0 {
-		limSearch = d.Cfg.Limits.Default
-	}
+	// ---- Local demo endpoints (rate-limited) ----
+	readLim := rl.EffectiveLimit(d.Cfg, "/read")
+	searchLim := rl.EffectiveLimit(d.Cfg, "/search")
 
-	// TODO(stormgate): remove local /read and /search once a proper backend is wired,
-	// and apply rate limiting before proxy for those backend routes.
-	// Local demo endpoints (rate-limited)
-	r.With(func(next http.Handler) http.Handler { return d.RL.Limit("/read", limRead, next) }).Get("/read", func(w http.ResponseWriter, _ *http.Request) {
-		Requests.WithLabelValues("200", "/read").Inc()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"msg":"read ok"}`))
-	})
+	// /read
+	r.With(func(next http.Handler) http.Handler { return d.RL.Limit("/read", readLim, next) }).
+		Get("/read", func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(5 * time.Millisecond)
+			Requests.WithLabelValues("200", "/read").Inc()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"msg":"read ok"}`))
+		})
 
-	r.With(func(next http.Handler) http.Handler { return d.RL.Limit("/search", limSearch, next) }).Get("/search", func(w http.ResponseWriter, _ *http.Request) {
-		Requests.WithLabelValues("200", "/search").Inc()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"msg":"search ok"}`))
-	})
+	// /search
+	r.With(func(next http.Handler) http.Handler { return d.RL.Limit("/search", searchLim, next) }).
+		Get("/search", func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(40 * time.Millisecond)
+			Requests.WithLabelValues("200", "/search").Inc()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"msg":"search ok"}`))
+		})
 
 	// -------- Proxy prefix from env --------
 	prefix := strings.TrimSpace(os.Getenv("PROXY_PREFIX")) // e.g., "/api"
@@ -143,21 +149,67 @@ func NewRouter(d RouterDeps, proxy *httputil.ReverseProxy) (http.Handler, func()
 	}
 	prefix = strings.TrimRight(prefix, "/") // normalize
 
+	// Build the proxy handler (captures status for metrics)
+	proxyHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		sr := &statusRecorder{ResponseWriter: w, code: 200}
+		proxy.ServeHTTP(sr, req)
+		Requests.WithLabelValues(strconv.Itoa(sr.code), "proxy").Inc()
+	})
+
 	if proxy != nil {
-		// Only <prefix>/* is proxied; strip <prefix> for upstream
-		r.Mount(prefix, http.StripPrefix(prefix, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			sr := &statusRecorder{ResponseWriter: w, code: 200}
-			proxy.ServeHTTP(sr, req)
-			Requests.WithLabelValues(strconv.Itoa(sr.code), "proxy").Inc()
-		})))
-	} else {
-		// Deterministic behavior if no proxy injected
+		// Mount a router at the prefix so we can apply per-subroute limits if configured.
 		r.Route(prefix, func(api chi.Router) {
-			api.NotFound(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			// 1) Collect all configured routes that are more specific than the prefix.
+			var specific []string
+			for route := range d.Cfg.Limits.Routes {
+				if route == "" || !strings.HasPrefix(route, "/") {
+					continue
+				}
+				if route == prefix {
+					continue
+				}
+				if strings.HasPrefix(route, prefix+"/") {
+					specific = append(specific, route)
+				}
+			}
+			// Longest-first so deeper paths bind before the fallback.
+			sort.Slice(specific, func(i, j int) bool { return len(specific[i]) > len(specific[j]) })
+
+			// 2) For each specific route (/api/search, /api/users, …) apply its own policy.
+			for _, route := range specific {
+				subPath := strings.TrimPrefix(route, prefix) // e.g., "/search"
+				if subPath == "" {
+					continue
+				}
+				base := rl.EffectiveLimit(d.Cfg, route)
+
+				api.Route(subPath, func(sr chi.Router) {
+					// Limit by the specific route key, but always strip <prefix> before proxying upstream.
+					limited := d.RL.Limit(route, base, http.StripPrefix(prefix, proxyHandler))
+					// Match both the exact path and any children under it.
+					sr.Handle("/", limited)
+					sr.Handle("/*", limited)
+				})
+			}
+
+			// 3) Fallback for anything else under the prefix -> use the prefix-level policy.
+			prefixBase := rl.EffectiveLimit(d.Cfg, prefix)
+			prefixLimited := d.RL.Limit(prefix, prefixBase, http.StripPrefix(prefix, proxyHandler))
+			api.Handle("/", prefixLimited)
+			api.Handle("/*", prefixLimited)
+		})
+
+	} else {
+		// Stub handler when no proxy exists, still rate-limited (prefix-level)
+		r.Route(prefix, func(api chi.Router) {
+			prefixBase := rl.EffectiveLimit(d.Cfg, prefix)
+			stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusBadGateway)
-				_, _ = w.Write([]byte(`{"error":"bad_gateway"}`))
-			}))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"ok":true,"via":"stub","path":"` + r.URL.Path + `"}`))
+			})
+			api.Handle("/", d.RL.Limit(prefix, prefixBase, stub))
+			api.Handle("/*", d.RL.Limit(prefix, prefixBase, stub))
 		})
 	}
 

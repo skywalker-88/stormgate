@@ -8,9 +8,18 @@ import (
 	"github.com/knadh/koanf/v2"
 )
 
+// ---- Server configuration ----
+
 type Server struct {
 	Addr string `yaml:"addr"`
 }
+
+type Identity struct {
+	// "header:X-API-Key" or "ip"
+	Source string `yaml:"source"`
+}
+
+// ---- Redis configuration ----
 
 type Redis struct {
 	Addr     string `yaml:"addr"`
@@ -18,9 +27,7 @@ type Redis struct {
 	Password string `yaml:"password"`
 }
 
-type Identity struct {
-	Source string `yaml:"source"`
-}
+// ---- Rate limiting policy ----
 
 type Limit struct {
 	RPS   float64 `yaml:"rps"`
@@ -29,9 +36,12 @@ type Limit struct {
 }
 
 type Limits struct {
-	Default Limit            `yaml:"default"`
-	Routes  map[string]Limit `yaml:"routes"`
+	Default      Limit            `yaml:"default"`
+	Routes       map[string]Limit `yaml:"routes"`
+	GlobalClient Limit            `yaml:"global_client"`
 }
+
+// ---- Anomaly detection policy ----
 
 type Anomaly struct {
 	Enabled               bool    `yaml:"enabled"`
@@ -44,22 +54,58 @@ type Anomaly struct {
 	KeepSuspiciousSeconds int     `yaml:"keep_suspicious_seconds"`
 }
 
-type Config struct {
-	Server   Server   `yaml:"server"`
-	Redis    Redis    `yaml:"redis"`
-	Identity Identity `yaml:"identity"`
-	Limits   Limits   `yaml:"limits"`
-	Anomaly  Anomaly  `yaml:"anomaly"`
+// ---- Mitigation policy ----
+
+type StepRamp struct {
+	Enabled     bool      `yaml:"enabled"`
+	Steps       []float64 `yaml:"steps"`        // e.g., [0.5, 0.75, 1.0]
+	StepSeconds int       `yaml:"step_seconds"` // informational; enforcement can choose how to use it
 }
 
-func Load(path string) (*Config, error) {
+type RepeatOffender struct {
+	WindowSeconds int `yaml:"window_seconds"` // M
+	Threshold     int `yaml:"threshold"`      // N anomalies in window -> block
+}
+
+type Allowlist struct {
+	Clients []string `yaml:"clients"` // client IDs (IP or API key) that skip mitigation
+}
+
+type Mitigation struct {
+	MinRPS             float64        `yaml:"min_rps"`
+	MinBurst           int            `yaml:"min_burst"`
+	OverrideTTLSeconds int            `yaml:"override_ttl_seconds"`
+	BlockTTLSeconds    int            `yaml:"block_ttl_seconds"`
+	StepRamp           StepRamp       `yaml:"step_ramp"`
+	RepeatOffender     RepeatOffender `yaml:"repeat_offender"`
+	Allowlist          Allowlist      `yaml:"allowlist"`
+}
+
+// ---------------------------
+
+type Config struct {
+	Server     Server     `yaml:"server"`
+	Redis      Redis      `yaml:"redis"`
+	Identity   Identity   `yaml:"identity"`
+	Limits     Limits     `yaml:"limits"`
+	Anomaly    Anomaly    `yaml:"anomaly"`
+	Mitigation Mitigation `yaml:"mitigation"`
+}
+
+func Load() (*Config, error) {
+	// Allow env override if caller passes empty path.
+	path := os.Getenv("STORMGATE_CONFIG")
+	if path == "" {
+		path = "configs/policies.yaml"
+	}
+
 	k := koanf.New(".")
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
 		return nil, err
 	}
 	var cfg Config
 	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
-		Tag: "yaml", // ← use yaml tags instead of the default "koanf"
+		Tag: "yaml",
 	}); err != nil {
 		return nil, err
 	}
